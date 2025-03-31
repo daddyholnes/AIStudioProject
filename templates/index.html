@@ -8,11 +8,19 @@
 </head>
 <body>
     <div id="app-container">
+        <div id="media-sidebar">
+            <div id="webcam-container">
+                <video id="webcam-feed" autoplay playsinline width="320" height="240"></video>
+                <button id="capture-button">📸 Capture Frame</button>
+                <canvas id="capture-canvas" style="display:none;"></canvas>
+            </div>
+        </div>
         <div id="chat-messages"></div>
         <div id="input-area">
             <select id="model-selector"></select>
             <input type="text" id="message-input" placeholder="Type your message...">
             <button id="send-button">Send</button>
+            <button id="record-button">🎤 Record</button>
         </div>
     </div>
 

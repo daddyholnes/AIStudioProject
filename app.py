@@ -1,9 +1,12 @@
 import os
-from flask import Flask, render_template
+from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 import google.auth
 import vertexai
 from vertexai.generative_models import GenerativeModel
+import base64
+from google.cloud import texttospeech
+import google.cloud.speech
 
 # Define constants for Google Vertex AI
 PROJECT_ID = "camera-calibration-beta"
@@ -25,11 +28,166 @@ except Exception as e:
     print(f"Error initializing Vertex AI: {e}")
     print("Make sure GOOGLE_APPLICATION_CREDENTIALS is properly set in your environment")
 
+# Initialize Google Cloud Text-to-Speech Client
+try:
+    tts_client = texttospeech.TextToSpeechClient()
+    print("Google Cloud Text-to-Speech client initialized successfully")
+except Exception as e:
+    print(f"Error initializing Text-to-Speech client: {e}")
+    print("Make sure GOOGLE_APPLICATION_CREDENTIALS is properly set in your environment")
+    tts_client = None
+
+# Initialize Google Cloud Speech-to-Text Client
+try:
+    stt_client = google.cloud.speech.SpeechClient()
+    print("Google Cloud Speech-to-Text client initialized successfully")
+except Exception as e:
+    print(f"Error initializing Speech-to-Text client: {e}")
+    print("Make sure GOOGLE_APPLICATION_CREDENTIALS is properly set in your environment")
+    stt_client = None
+
 # Flask routes
 @app.route('/')
 def index():
     """Serve the main application page"""
     return render_template('index.html')
+
+@app.route('/tts', methods=['POST'])
+def text_to_speech():
+    """
+    Convert text to speech using Google Cloud Text-to-Speech API
+    
+    Expected request format:
+    {
+        'text': 'Text to be converted to speech'
+    }
+    
+    Returns:
+    {
+        'audio_base64': 'base64 encoded audio data'
+    }
+    or
+    {
+        'error': 'Error message'
+    }
+    """
+    if tts_client is None:
+        return jsonify({'error': 'Text-to-Speech service not available'}), 503
+    
+    try:
+        # Get JSON data from request
+        data = request.get_json()
+        
+        # Extract text to synthesize
+        if not data or 'text' not in data or not data['text'].strip():
+            return jsonify({'error': 'No text provided'}), 400
+        
+        text_to_synthesize = data['text']
+        
+        # Set up the TTS request
+        synthesis_input = texttospeech.SynthesisInput(text=text_to_synthesize)
+        
+        # Configure voice parameters
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="en-US",
+            name="en-US-Studio-O"
+        )
+        
+        # Configure audio format
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3
+        )
+        
+        # Generate speech
+        response = tts_client.synthesize_speech(
+            input=synthesis_input,
+            voice=voice,
+            audio_config=audio_config
+        )
+        
+        # Convert audio content to base64
+        audio_base64 = base64.b64encode(response.audio_content).decode('utf-8')
+        
+        # Return the base64 encoded audio
+        return jsonify({'audio_base64': audio_base64})
+        
+    except Exception as e:
+        error_message = f"Error processing Text-to-Speech request: {str(e)}"
+        print(error_message)
+        return jsonify({'error': error_message}), 500
+
+@app.route('/stt', methods=['POST'])
+def speech_to_text():
+    """
+    Convert speech to text using Google Cloud Speech-to-Text API
+
+    Expected request format:
+    {
+        'audio_base64': 'base64 encoded audio data',
+        'mime_type': 'audio/webm' or 'audio/ogg' etc.
+    }
+
+    Returns:
+    {
+        'transcript': 'Recognized text from audio'
+    }
+    or
+    {
+        'error': 'Error message'
+    }
+    """
+    if stt_client is None:
+        return jsonify({'error': 'Speech-to-Text service not available'}), 503
+
+    try:
+        # Get JSON data from request
+        data = request.get_json()
+
+        # Extract audio_base64 and mime_type
+        audio_base64 = data.get('audio_base64')
+        mime_type = data.get('mime_type')
+
+        if not audio_base64 or not mime_type:
+            return jsonify({'error': 'Missing audio_base64 or mime_type'}), 400
+
+        # Decode the base64 audio data
+        audio_bytes = base64.b64decode(audio_base64)
+
+        # Set up the RecognitionAudio object
+        audio = google.cloud.speech.RecognitionAudio(content=audio_bytes)
+
+        # Map mime_type to encoding
+        if mime_type == 'audio/webm':
+            encoding = google.cloud.speech.RecognitionConfig.AudioEncoding.WEBM_OPUS
+        elif mime_type == 'audio/ogg':
+            encoding = google.cloud.speech.RecognitionConfig.AudioEncoding.OGG_OPUS
+        else:
+            return jsonify({'error': f'Unsupported mime_type: {mime_type}'}), 400
+
+        # Set up the RecognitionConfig object
+        config = google.cloud.speech.RecognitionConfig(
+            encoding=encoding,
+            sample_rate_hertz=48000,
+            language_code="en-US",
+            enable_automatic_punctuation=True
+        )
+
+        # Call the STT client to recognize speech
+        response = stt_client.recognize(config=config, audio=audio)
+
+        # Extract the transcript
+        if not response.results:
+            return jsonify({'error': 'No speech recognized'}), 400
+
+        transcript = " ".join(result.alternatives[0].transcript for result in response.results)
+
+        # Return the transcript
+        return jsonify({'transcript': transcript})
+
+    except Exception as e:
+        error_message = f"Error processing Speech-to-Text request: {str(e)}"
+        print(error_message)
+        return jsonify({'error': error_message}), 500
 
 # SocketIO event handlers
 @socketio.on('connect')
